@@ -2,12 +2,8 @@
 
 //  The weather icons and fonts are in the sketch data folder, press Ctrl+K
 //  to view.
-
-
 //            >>>       IMPORTANT TO PREVENT CRASHES      <<<
 //>>>>>>  Set SPIFFS to at least 1.5Mbytes before uploading files  <<<<<<
-
-
 //                >>>           DON'T FORGET THIS             <<<
 //  Upload the fonts and icons to SPIFFS using the "Tools"  "ESP32 Sketch Data Upload"
 //  or "ESP8266 Sketch Data Upload" menu option in the IDE.
@@ -28,8 +24,8 @@
 //////////////////////////////
 // Setttings defined below
 
-#define WIFI_SSID      "goofydogs"
-#define WIFI_PASSWORD  "troopandcasper"
+//#define WIFI_SSID      "goofydogs"
+//#define WIFI_PASSWORD  "troopandcasper"
 
 #define TIMEZONE usET // See NTP_Time.h tab for other "Zone references", UK, usMT etc
 

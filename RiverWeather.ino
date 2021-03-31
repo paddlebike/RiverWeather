@@ -45,25 +45,21 @@
 // Additional functions
 #include "GfxUi.h"          // Attached to this sketch
 #include "SPIFFS_Support.h" // Attached to this sketch
-
-#ifdef ESP8266
-  #include <ESP8266WiFi.h>
-#else
-  #include <WiFi.h>
-#endif
+//#include <WiFi.h>
+#include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 
 
 // check All_Settings.h for adapting to your needs
 #include "All_Settings.h"
 
 #include <JSON_Decoder.h> // https://github.com/Bodmer/JSON_Decoder
-
 #include <OpenWeather.h>  // Latest here: https://github.com/Bodmer/OpenWeather
 
 #include "NTP_Time.h"     // Attached to this sketch, see that tab for library needs
 
 #include "hydrograph.h"
-//#include "usgsStation.h"
+
+#include "USGSRDB.h"
 
 //
 // Define these in User_Setup.h in the TFT_eSPI
@@ -93,7 +89,11 @@
 
 #define TFT_GREY 0x5AEB
 
+#define SHOW_FORECAST 0
+#define SHOW_CURRENT  1
+#define SHOW_GRAPH    2
 
+#define SERIAL_MESSAGES 1
 /***************************************************************************************
 **                          Define the globals and class instances
 ***************************************************************************************/
@@ -113,7 +113,7 @@ GfxUi ui = GfxUi(&tft); // Jpeg and bmpDraw functions TODO: pull outside of a cl
 
 long lastDownloadUpdate = millis();
 
-WiFiClient client;
+static WiFiClient client;
 void XML_callback(uint8_t statusflags, char* tagName, uint16_t tagNameLen, char* data, uint16_t dataLen);
 static Hydrograph hydrograph("brkm2", &XML_callback);
 
@@ -121,7 +121,9 @@ void XML_callback(uint8_t statusflags, char* tagName, uint16_t tagNameLen, char*
   hydrograph.processXML(statusflags, tagName, tagNameLen, data, dataLen);
 }
 static ace_time::BasicZoneProcessor timeZoneProcessor;
-//static USGSStation usgsStation("01646500");
+static USGSStation* usgs = new USGSStation("01646500");
+
+int currentRiverDisplay = SHOW_FORECAST;
 
 
 /***************************************************************************************
@@ -146,6 +148,49 @@ int splitIndex(String text);
 
 bool fetchHydrograph();
 void drawHydrograph();
+
+bool fetchUSGSStation();
+void drawUSGSStationReading(StationReading* sr);
+
+
+void WIFISetUp(void)
+{
+  // Set WiFi to station mode and disconnect from an AP if it was previously connected
+  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
+  //WiFiManager, Local intialization. Once its business is done, there is no need to keep it around
+  WiFiManager wm;
+  
+  Serial.println("Setting up Wifi");
+  bool res = wm.autoConnect("AutoConnectAP","password"); // password protected ap
+  if(!res) {
+      ESP.restart();
+  } 
+    
+  delay(100);
+
+  byte count = 0;
+  while(WiFi.status() != WL_CONNECTED && count < 10)
+  {
+    count ++;
+    delay(500);
+    Serial.println("Connecting to WiFi");
+    
+  }
+
+  if(WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("Connect to WiFi    ");
+  }
+  else
+  {
+    
+    Serial.println("Connection Failed");
+    while(1);
+  }
+  Serial.println("WiFi Setup Done");
+  delay(500);
+}
+
 
 /***************************************************************************************
 **                          Setup
@@ -195,7 +240,7 @@ void setup() {
 
   tft.drawString("Connecting to WiFi", 120, 240);
   tft.setTextPadding(240); // Pad next drawString() text to full width to over-write old text
-
+#if 0
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -203,6 +248,9 @@ void setup() {
     Serial.print(".");
   }
   Serial.println();
+#endif
+  WIFISetUp();
+
 
   tft.setTextDatum(BC_DATUM);
   tft.setTextPadding(240); // Pad next drawString() text to full width to over-write old text
@@ -215,7 +263,6 @@ void setup() {
 
   tft.unloadFont();
 
-  //if (usgsStation.fetch()) usgsStation.serialPrint();
   fetchHydrograph();
 
   ow.partialDataSet(true); // Collect a subset of the data available
@@ -249,6 +296,19 @@ void loop() {
   }
 
   booted = false;
+
+  // This will report a LOT of events when touched
+  TouchPoint p = touchScreen.read();
+  if (p.touched) {
+    Serial.printf("You touched me at %d x %d\n", p.xPos, p.yPos);
+    if (currentRiverDisplay == SHOW_FORECAST) {
+      fetchUSGSStation();
+      currentRiverDisplay = SHOW_CURRENT;
+    } else if (currentRiverDisplay == SHOW_CURRENT) {
+      currentRiverDisplay = SHOW_FORECAST;
+      drawHydrograph();
+    }
+  }
 }
 
 /***************************************************************************************
@@ -272,14 +332,6 @@ void updateData() {
   daily =   new OW_daily;
   hourly =  new OW_hourly;
 
-#ifdef RANDOM_LOCATION // Randomly choose a place on Earth to test icons etc
-  String latitude = "";
-  latitude = (random(180) - 90);
-  String longitude = "";
-  longitude = (random(360) - 180);
-  Serial.print("Lat = "); Serial.print(latitude);
-  Serial.print(", Lon = "); Serial.println(longitude);
-#endif
 
   bool parsed = ow.getForecast(current, hourly, daily, api_key, latitude, longitude, units, language);
 
@@ -380,25 +432,23 @@ void drawTime() {
 **                          Draw the current weather
 ***************************************************************************************/
 void drawCurrentWeather() {
+  /*
   String date = "Updated: " + strDate(current->dt);
-  String weatherText = "None";
 
   tft.setTextDatum(BC_DATUM);
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
   tft.setTextPadding(tft.textWidth(" Updated: Mmm 44 44:44 "));  // String width + margin
   tft.drawString(date, 120, 16);
-
+  */
   String weatherIcon = "";
 
   String currentSummary = current->main;
   currentSummary.toLowerCase();
 
+  String weatherText = "None";
   weatherIcon = getMeteoconIcon(current->id, true);
-
-  //uint32_t dt = millis();
-  ui.drawBmp("/icon/" + weatherIcon + ".bmp", 0, 53);
-  //Serial.print("Icon draw time = "); Serial.println(millis()-dt);
-
+  ui.drawBmp("/icon/" + weatherIcon + ".bmp", 10, 63);
+  
   // Weather Text
   if (language == "en")
     weatherText = current->main;
@@ -409,14 +459,16 @@ void drawCurrentWeather() {
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
 
   int splitPoint = 0;
-  int xpos = 235;
+  int xpos = 23;
+  tft.drawString(weatherText.c_str(), 40, 120);
+  /*
   splitPoint =  splitIndex(weatherText);
 
   tft.setTextPadding(xpos - 100);  // xpos - icon width
   if (splitPoint) tft.drawString(weatherText.substring(0, splitPoint), xpos, 69);
   else tft.drawString(" ", xpos, 69);
   tft.drawString(weatherText.substring(splitPoint), xpos, 86);
-
+*/
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setTextDatum(TR_DATUM);
   tft.setTextPadding(0);
@@ -474,6 +526,8 @@ void drawForecast() {
   drawForecastDetail(182, 200, dayIndex  ); // was 180
   drawSeparator(205 + 69);
 }
+
+
 
 /***************************************************************************************
 **                          Draw 1 forecast column at x, y
@@ -768,7 +822,7 @@ bool fetchHydrograph() {
 }
 
 void drawHydrograph() {
-  
+  tft.fillRect(0, 280, 320, 480, TFT_BLACK);
   tft.loadFont(AA_FONT_SMALL);
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
   tft.setTextDatum(TR_DATUM);
@@ -800,6 +854,78 @@ void drawHydrograph() {
     if (startY > 460) {
       break;
     }
+  }
+}
+
+bool fetchUSGSStation() {
+  bool success = usgs->fetch();
+  if (success) {
+    usgs->serialPrint();
+    Serial.println("Getting the last entry");
+    StationReading* sr = usgs->getLastReading();
+    if (sr) {
+      sr->serialPrint();
+      drawUSGSStationReading(sr);
+    }
+  }
+  return success;
+}
+
+/***************************************************************************************
+**                          Draw the current stream status
+***************************************************************************************/
+
+const char* getPlayString(float level) {
+  if (level < 3.5f) return "Attainment";
+  if (level < 3.65f) return "Low O-Deck!";
+  if (level < 3.8f) return "O-Deck!";
+  if (level < 4.03f) return "Tweener";
+  if (level < 4.25f) return "Low Rocky";
+  if (level < 4.5f) return "Rocky";
+  if (level < 4.7f) return "High Rocky";
+  if (level < 5.0f) return "Oufut";
+  if (level < 5.5f) return "Low Center";
+  if (level < 6.5f) return "Center";
+  if (level < 7.0f) return "High Center";
+  if (level < 7.5f) return "Skull";
+}
+
+
+const unsigned int getPlayColor(float level) {
+  if (level < 3.5f) return TFT_YELLOW;
+  if (level < 3.65f) return TFT_GREEN;
+  if (level < 3.8f) return TFT_GREEN;
+  if (level < 4.03f) return TFT_YELLOW;
+  if (level < 4.25f) return TFT_GREEN;
+  if (level < 4.5f) return TFT_GREEN;
+  if (level < 4.7f) return TFT_GREEN;
+  if (level < 5.0f) return TFT_YELLOW;
+  if (level < 5.5f) return TFT_GREEN;
+  if (level < 6.5f) return TFT_GREEN;
+  if (level < 7.0f) return TFT_GREEN;
+  if (level < 7.5f) return TFT_GREEN;
+}
+
+// draws the current USGS stream data
+void drawUSGSStationReading(StationReading* sr) {
+  tft.fillRect(0, 280, 320, 480, TFT_BLACK);
+  
+  tft.loadFont(AA_FONT_SMALL);
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.setTextDatum(TR_DATUM);
+  tft.setTextPadding(0);
+  tft.drawString("Little Falls Conditions\n", 220, 280);
+  if (sr) {
+    tft.printf("Updated at: %s\n", sr->timeStr.c_str());
+
+    int level_width = (int)roundf(sr->stage * (float)20);
+    tft.setTextColor(getPlayColor(sr->stage), TFT_BLACK);
+
+    tft.printf("  Height : %2.2f  %s\n", sr->stage, getPlayString(sr->stage));
+    tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    
+    tft.printf("  Flow   : %d\n", sr->flow);
+    tft.printf("  Temp   : %2.1fC", sr->temp);
   }
 }
 
