@@ -27,7 +27,7 @@
 //#define WIFI_SSID      "goofydogs"
 //#define WIFI_PASSWORD  "troopandcasper"
 
-#define TIMEZONE usET // See NTP_Time.h tab for other "Zone references", UK, usMT etc
+//#define TIMEZONE usET // See NTP_Time.h tab for other "Zone references", UK, usMT etc
 
 // Update every 15 minutes, up to 1000 request per day are free (viz average of ~40 per hour)
 const int UPDATE_INTERVAL_SECS = 15 * 60UL; // 15 minutes

@@ -36,7 +36,6 @@
 **                          Load the libraries and settings
 ***************************************************************************************/
 #include <Arduino.h>
-#include <AceTime.h>
 #include <Wire.h>
 #include "FT62XXTouchScreen.h"
 #include <SPI.h>
@@ -45,21 +44,21 @@
 // Additional functions
 #include "GfxUi.h"          // Attached to this sketch
 #include "SPIFFS_Support.h" // Attached to this sketch
-//#include <WiFi.h>
 #include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 
 
 // check All_Settings.h for adapting to your needs
 #include "All_Settings.h"
+#include <OpenWeatherOneCall.h>
+#include <NTPClient.h>
 
-#include <JSON_Decoder.h> // https://github.com/Bodmer/JSON_Decoder
-#include <OpenWeather.h>  // Latest here: https://github.com/Bodmer/OpenWeather
-
-#include "NTP_Time.h"     // Attached to this sketch, see that tab for library needs
+#include <AceTime.h>
+#define _TASK_SLEEP_ON_IDLE_RUN
+#include <TaskScheduler.h>
 
 #include "hydrograph.h"
-
 #include "USGSRDB.h"
+#include "utils.h"
 
 //
 // Define these in User_Setup.h in the TFT_eSPI
@@ -94,22 +93,31 @@
 #define SHOW_GRAPH    2
 
 #define SERIAL_MESSAGES 1
+#define MAX_DAYS 5
+
+#define WEATHER_START_Y 130
+#define LABEL_X 8
 /***************************************************************************************
 **                          Define the globals and class instances
 ***************************************************************************************/
 
+using namespace ace_time;
+using namespace ace_time::clock;
+
+
+#define ONECALLKEY "58f369e1efbff0ef7c1d8dce59ef4be2"
+#define WEATHER_CITY 4761951 //<---------------Great Falls VA
+#define GAUGE_TEXT_START 150
+#define METRIC_WEATHER 0
+
 TFT_eSPI tft = TFT_eSPI();             // Invoke custom library
 FT62XXTouchScreen touchScreen = FT62XXTouchScreen(DISPLAY_HEIGHT, PIN_SDA, PIN_SCL);
-
-OW_Weather ow;      // Weather forecast library instance
-
-OW_current *current; // Pointers to structs that temporarily holds weather data
-OW_hourly  *hourly;  // Not used
-OW_daily   *daily;
 
 boolean booted = true;
 
 GfxUi ui = GfxUi(&tft); // Jpeg and bmpDraw functions TODO: pull outside of a class
+
+OpenWeatherOneCall OWOC;    // Invoke Weather Library
 
 long lastDownloadUpdate = millis();
 
@@ -120,11 +128,27 @@ static Hydrograph hydrograph("brkm2", &XML_callback);
 void XML_callback(uint8_t statusflags, char* tagName, uint16_t tagNameLen, char* data, uint16_t dataLen) {
   hydrograph.processXML(statusflags, tagName, tagNameLen, data, dataLen);
 }
-static ace_time::BasicZoneProcessor timeZoneProcessor;
+static BasicZoneProcessor timeZoneProcessor;
+static NtpClock ntpClock;
+static SystemClockLoop systemClock(nullptr /*reference*/, nullptr /*backup*/);
 static USGSStation* usgs = new USGSStation("01646500");
 
 int currentRiverDisplay = SHOW_FORECAST;
+Scheduler runner;
 
+
+void fetchUSGSStation();
+void fetchWeather();
+void updateSystemTime();
+void displayTime();
+void checkTouch();
+
+// Tasks
+Task fetchUSGSStationTask(15 * 60 * 1000, TASK_FOREVER, &fetchUSGSStation, &runner, true);
+Task fetchWeatherTask(15 * 60 * 1000, TASK_FOREVER, &fetchWeather, &runner, true);
+Task updateSystemTimeTask(60 * 60 * 1000, TASK_FOREVER, &updateSystemTime, &runner, true);
+Task displayTimeTask(1000, TASK_FOREVER, &displayTime,  &runner, true);
+Task checkTouchTask(100, TASK_FOREVER, &checkTouch, &runner, true);
 
 /***************************************************************************************
 **                          Declare prototypes
@@ -146,10 +170,9 @@ int leftOffset(String text, String sub);
 int rightOffset(String text, String sub);
 int splitIndex(String text);
 
-bool fetchHydrograph();
 void drawHydrograph();
 
-bool fetchUSGSStation();
+void fetchUSGSStation();
 void drawUSGSStationReading(StationReading* sr);
 
 
@@ -193,338 +216,85 @@ void WIFISetUp(void)
 
 
 /***************************************************************************************
-**                          Setup
-***************************************************************************************/
-void setup() {
-  Serial.begin(250000);
-
-  tft.begin();
-  
-  // Backlight hack...
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, 128);
-
-  touchScreen.begin();
-  tft.fillScreen(TFT_BLACK);
-
-  SPIFFS.begin();
-  listFiles();
-
-  // Enable if you want to erase SPIFFS, this takes some time!
-  // then disable and reload sketch to avoid reformatting on every boot!
-  #ifdef FORMAT_SPIFFS
-    tft.setTextDatum(BC_DATUM); // Bottom Centre datum
-    tft.drawString("Formatting SPIFFS, so wait!", 120, 195); SPIFFS.format();
-  #endif
-
-  // Draw splash screen
-  if (SPIFFS.exists("/splash/OpenWeather.jpg")   == true) ui.drawJpeg("/splash/OpenWeather.jpg",   0, 40);
-
-  delay(2000);
-
-  // Clear bottom section of screen
-  tft.fillRect(0, 206, 240, 320 - 206, TFT_BLACK);
-
-  tft.loadFont(AA_FONT_SMALL);
-  tft.setTextDatum(BC_DATUM); // Bottom Centre datum
-  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-
-  tft.drawString("Original by: blog.squix.org", 120, 260);
-  tft.drawString("Adapted by: Bodmer", 120, 280);
-
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-
-  delay(2000);
-
-  tft.fillRect(0, 206, 240, 320 - 206, TFT_BLACK);
-
-  tft.drawString("Connecting to WiFi", 120, 240);
-  tft.setTextPadding(240); // Pad next drawString() text to full width to over-write old text
-#if 0
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.print(".");
-  }
-  Serial.println();
-#endif
-  WIFISetUp();
-
-
-  tft.setTextDatum(BC_DATUM);
-  tft.setTextPadding(240); // Pad next drawString() text to full width to over-write old text
-  tft.drawString(" ", 120, 220);  // Clear line above using set padding width
-  tft.drawString("Fetching weather data...", 120, 240);
-
-  // Fetch the time
-  udp.begin(localPort);
-  syncTime();
-
-  tft.unloadFont();
-
-  fetchHydrograph();
-
-  ow.partialDataSet(true); // Collect a subset of the data available
-}
-
-/***************************************************************************************
-**                          Loop
-***************************************************************************************/
-void loop() {
-
-  // Check if we should update weather information
-  if (booted || (millis() - lastDownloadUpdate > 1000UL * UPDATE_INTERVAL_SECS))
-  {
-    updateData();
-    lastDownloadUpdate = millis();
-  }
-
-  // If minute has changed then request new time from NTP server
-  if (booted || minute() != lastMinute)
-  {
-    // Update displayed time first as we may have to wait for a response
-    drawTime();
-    lastMinute = minute();
-
-    // Request and synchronise the local clock
-    syncTime();
-
-    #ifdef SCREEN_SERVER
-      screenServer();
-    #endif
-  }
-
-  booted = false;
-
-  // This will report a LOT of events when touched
-  TouchPoint p = touchScreen.read();
-  if (p.touched) {
-    Serial.printf("You touched me at %d x %d\n", p.xPos, p.yPos);
-    if (currentRiverDisplay == SHOW_FORECAST) {
-      fetchUSGSStation();
-      currentRiverDisplay = SHOW_CURRENT;
-    } else if (currentRiverDisplay == SHOW_CURRENT) {
-      currentRiverDisplay = SHOW_FORECAST;
-      drawHydrograph();
-    }
-  }
-}
-
-/***************************************************************************************
-**                          Fetch the weather data  and update screen
-***************************************************************************************/
-// Update the Internet based information and update screen
-void updateData() {
-  // booted = true;  // Test only
-  // booted = false; // Test only
-
-  tft.loadFont(AA_FONT_SMALL);
-
-  if (booted) drawProgress(20, "Updating time...");
-  else fillSegment(22, 22, 0, (int) (20 * 3.6), 16, TFT_NAVY);
-
-  if (booted) drawProgress(50, "Updating conditions...");
-  else fillSegment(22, 22, 0, (int) (50 * 3.6), 16, TFT_NAVY);
-
-  // Create the structures that hold the retrieved weather
-  current = new OW_current;
-  daily =   new OW_daily;
-  hourly =  new OW_hourly;
-
-
-  bool parsed = ow.getForecast(current, hourly, daily, api_key, latitude, longitude, units, language);
-
-  printWeather(); // For debug, turn on output with #define SERIAL_MESSAGES
-
-  if (booted)
-  {
-    drawProgress(100, "Done...");
-    delay(2000);
-    tft.fillScreen(TFT_BLACK);
-  }
-  else
-  {
-    fillSegment(22, 22, 0, 360, 16, TFT_NAVY);
-    fillSegment(22, 22, 0, 360, 22, TFT_BLACK);
-  }
-
-  if (parsed)
-  {
-    drawCurrentWeather();
-    drawForecast();
-    drawAstronomy();
-
-    tft.unloadFont();
-
-    // Update the temperature here so we don't need to keep
-    // loading and unloading font which takes time
-    tft.loadFont(AA_FONT_LARGE);
-    tft.setTextDatum(TR_DATUM);
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-
-    // Font ASCII code 0xB0 is a degree symbol, but o used instead in small font
-    tft.setTextPadding(tft.textWidth(" -88")); // Max width of values
-
-    String weatherText = "";
-    weatherText = (int16_t) current->temp;  // Make it integer temperature
-    tft.drawString(weatherText, 215, 95); //  + "°" symbol is big... use o in small font
-  }
-  else
-  {
-    Serial.println("Failed to get weather");
-  }
-
-  // Delete to free up space
-  delete current;
-  delete hourly;
-  delete daily;
-  tft.unloadFont();
-
-  //if (usgsStation.fetch()) usgsStation.serialPrint();
-  if (fetchHydrograph()) drawHydrograph();
-}
-
-/***************************************************************************************
-**                          Update progress bar
-***************************************************************************************/
-void drawProgress(uint8_t percentage, String text) {
-  tft.setTextDatum(BC_DATUM);
-  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft.setTextPadding(240);
-  tft.drawString(text, 120, 260);
-
-  ui.drawProgressBar(10, 269, 240 - 20, 15, percentage, TFT_WHITE, TFT_BLUE);
-
-  tft.setTextPadding(0);
-}
-
-/***************************************************************************************
-**                          Draw the clock digits
-***************************************************************************************/
-void drawTime() {
-  tft.loadFont(AA_FONT_LARGE);
-
-  // Convert UTC to local time, returns zone code in tz1_Code, e.g "GMT"
-  time_t local_time = TIMEZONE.toLocal(now(), &tz1_Code);
-
-  String timeNow = "";
-
-  if (hour(local_time) < 10) timeNow += "0";
-  timeNow += hour(local_time);
-  timeNow += ":";
-  if (minute(local_time) < 10) timeNow += "0";
-  timeNow += minute(local_time);
-
-  tft.setTextDatum(BC_DATUM);
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextPadding(tft.textWidth(" 44:44 "));  // String width + margin
-  tft.drawString(timeNow, 120, 53);
-
-  drawSeparator(51);
-
-  tft.setTextPadding(0);
-
-  tft.unloadFont();
-}
-
-/***************************************************************************************
 **                          Draw the current weather
 ***************************************************************************************/
 void drawCurrentWeather() {
-  /*
-  String date = "Updated: " + strDate(current->dt);
-
-  tft.setTextDatum(BC_DATUM);
-  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft.setTextPadding(tft.textWidth(" Updated: Mmm 44 44:44 "));  // String width + margin
-  tft.drawString(date, 120, 16);
-  */
+  String wind[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+  drawSeparator(100);
+  tft.setTextPadding(0); 
+  tft.setCursor(LABEL_X,WEATHER_START_Y,2);
   String weatherIcon = "";
-
+  OpenWeatherOneCall::nowData* current = OWOC.current;
   String currentSummary = current->main;
   currentSummary.toLowerCase();
 
   String weatherText = "None";
-  weatherIcon = getMeteoconIcon(current->id, true);
-  ui.drawBmp("/icon/" + weatherIcon + ".bmp", 10, 63);
+  //weatherIcon = getMeteoconIcon(current->id, true);
+  //ui.drawBmp("/icon50/" + weatherIcon + ".bmp", 8, WEATHER_START_Y);
   
-  // Weather Text
-  if (language == "en")
-    weatherText = current->main;
-  else
-    weatherText = current->description;
+  
 
-  tft.setTextDatum(BR_DATUM);
+  tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-
-  int splitPoint = 0;
-  int xpos = 23;
-  tft.drawString(weatherText.c_str(), 40, 120);
-  /*
-  splitPoint =  splitIndex(weatherText);
-
-  tft.setTextPadding(xpos - 100);  // xpos - icon width
-  if (splitPoint) tft.drawString(weatherText.substring(0, splitPoint), xpos, 69);
-  else tft.drawString(" ", xpos, 69);
-  tft.drawString(weatherText.substring(splitPoint), xpos, 86);
-*/
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextDatum(TR_DATUM);
-  tft.setTextPadding(0);
-  if (units == "metric") tft.drawString("oC", 237, 95);
-  else  tft.drawString("oF", 237, 95);
-
-  //Temperature large digits added in updateData() to save swapping font here
- 
+  tft.drawString("Currently:" ,LABEL_X , WEATHER_START_Y + 0);
+  
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(current->main,100 , WEATHER_START_Y + 0);
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  weatherText = (uint16_t)current->wind_speed;
+  tft.drawString("Temperature:" ,LABEL_X , WEATHER_START_Y + 20);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  weatherText = String(current->temperature) + " F";
+  tft.drawString(weatherText, 100, WEATHER_START_Y + 20);
 
-  if (units == "metric") weatherText += " m/s";
-  else weatherText += " mph";
-
-  tft.setTextDatum(TC_DATUM);
-  tft.setTextPadding(tft.textWidth("888 m/s")); // Max string length?
-  tft.drawString(weatherText, 124, 136);
-
-  if (units == "imperial")
-  {
-    weatherText = current->pressure;
-    weatherText += " in";
-  }
-  else
-  {
-    weatherText = (uint16_t)current->pressure;
-    weatherText += " hPa";
-  }
-
-  tft.setTextDatum(TR_DATUM);
-  tft.setTextPadding(tft.textWidth(" 8888hPa")); // Max string length?
-  tft.drawString(weatherText, 230, 136);
-
-  int windAngle = (current->wind_deg + 22.5) / 45;
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.drawString("Wind:" ,LABEL_X , WEATHER_START_Y + 40);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  int windAngle = (current->windBearing + 22.5) / 45;
   if (windAngle > 7) windAngle = 0;
-  String wind[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW" };
-  ui.drawBmp("/wind/" + wind[windAngle] + ".bmp", 101, 86);
+  weatherText = wind[windAngle] + " " + (uint16_t)current->windSpeed + " mph";
+  tft.drawString(weatherText ,100 , WEATHER_START_Y + 40);
 
-  drawSeparator(153);
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.drawString("Barometer:" ,LABEL_X , WEATHER_START_Y + 60);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(String(current->pressure) ,100 , WEATHER_START_Y + 60);
 
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.drawString("Humidity:" ,LABEL_X , WEATHER_START_Y + 80);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(String(current->humidity) + "%" ,100 , WEATHER_START_Y + 80);
+
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.drawString("Clouds:" ,LABEL_X , WEATHER_START_Y + 100);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(String(current->cloudCover) + "%",100 , WEATHER_START_Y + 100);
+    
+
+  //ui.drawBmp("/wind/" + wind[windAngle] + ".bmp", 101, WEATHER_START_Y);
+
+ 
   tft.setTextDatum(TL_DATUM); // Reset datum to normal
   tft.setTextPadding(0);      // Reset padding width to none
+  
 }
 
 /***************************************************************************************
-**                          Draw the 4 forecast columns
+**                          Draw the 5 forecast columns
 ***************************************************************************************/
 // draws the three forecast columns
-void drawForecast() {
-  int8_t dayIndex = 1;
-
-  drawForecastDetail(  8, 200, dayIndex++);
-  drawForecastDetail( 66, 200, dayIndex++); // was 95
-  drawForecastDetail(124, 200, dayIndex++); // was 180
-  drawForecastDetail(182, 200, dayIndex  ); // was 180
-  drawSeparator(205 + 69);
+void displayWeatherForecast() {
+  if (currentRiverDisplay == SHOW_FORECAST) {
+    int8_t dayIndex = 0;
+    drawSeparator(100);
+    tft.unloadFont();
+    tft.setCursor(8,WEATHER_START_Y,2);
+    drawForecastDetail(  8, WEATHER_START_Y, dayIndex++);
+    drawForecastDetail( 68, WEATHER_START_Y, dayIndex++); 
+    drawForecastDetail(128, WEATHER_START_Y, dayIndex++); 
+    drawForecastDetail(188, WEATHER_START_Y, dayIndex++); 
+    drawForecastDetail(248, WEATHER_START_Y, dayIndex  ); 
+    drawSeparator(WEATHER_START_Y + 110);
+  }
 }
 
 
@@ -536,8 +306,8 @@ void drawForecast() {
 void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex) {
 
   if (dayIndex >= MAX_DAYS) return;
-
-  String day  = shortDOW[weekday(TIMEZONE.toLocal(daily->dt[dayIndex], &tz1_Code))];
+  OpenWeatherOneCall::futureData *daily = OWOC.forecast;
+  String day  = daily[dayIndex].weekDayName;
   day.toUpperCase();
 
   tft.setTextDatum(BC_DATUM);
@@ -548,13 +318,13 @@ void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex) {
 
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextPadding(tft.textWidth("-88   -88"));
-  String highTemp = String(daily->temp_max[dayIndex], 0);
-  String lowTemp  = String(daily->temp_min[dayIndex], 0);
-  tft.drawString(highTemp + " " + lowTemp, x + 25, y + 17);
+  String highTemp = String(daily[dayIndex].temperatureHigh, 0);
+  String lowTemp  = String(daily[dayIndex].temperatureLow, 0);
+  tft.drawString(lowTemp + " - " + highTemp, x + 25, y + 27);
 
-  String weatherIcon = getMeteoconIcon(daily->id[dayIndex], false);
+  String weatherIcon = getMeteoconIcon(daily[dayIndex].id, false);
 
-  ui.drawBmp("/icon50/" + weatherIcon + ".bmp", x, y + 18);
+  ui.drawBmp("/icon50/" + weatherIcon + ".bmp", x, y + 28);
 
   tft.setTextPadding(0); // Reset padding width to none
 }
@@ -568,59 +338,37 @@ void drawAstronomy() {
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextPadding(tft.textWidth(" Last qtr "));
 
-  time_t local_time = TIMEZONE.toLocal(current->dt, &tz1_Code);
-  uint16_t y = year(local_time);
-  uint8_t  m = month(local_time);
-  uint8_t  d = day(local_time);
-  uint8_t  h = hour(local_time);
+  auto localTz = TimeZone::forZoneInfo(&zonedb::kZoneAmerica_New_York, &timeZoneProcessor);
+  acetime_t nowSeconds = systemClock.getNow();
+  ZonedDateTime dateTime = ZonedDateTime::forEpochSeconds(nowSeconds, localTz);
+
+  uint16_t y = dateTime.year();
+  uint8_t  m = dateTime.month();
+  uint8_t  d = dateTime.day();
+  uint8_t  h = dateTime.hour();
   int      ip;
   uint8_t icon = moon_phase(y, m, d, h, &ip);
 
-  tft.drawString(moonPhase[ip], 270, 280);
-  ui.drawBmp("/moon/moonphase_L" + String(icon) + ".bmp", 250, 200);
+  tft.drawString(moonPhase[ip], 230, 260);
+  ui.drawBmp("/moon/moonphase_L" + String(icon) + ".bmp", 210, 180);
 
   tft.setTextDatum(BC_DATUM);
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
   tft.setTextPadding(0); // Reset padding width to none
-  tft.drawString(sunStr, 280, 160);
+  tft.drawString("Sunrise:", 200, WEATHER_START_Y + 15);
+  tft.drawString("Sunset :", 200, WEATHER_START_Y + 30);
 
   tft.setTextDatum(BR_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextPadding(tft.textWidth(" 88:88 "));
 
-  String rising = strTime(current->sunrise) + " ";
+  String rising = OWOC.forecast[0].readableSunrise;
   int dt = rightOffset(rising, ":"); // Draw relative to colon to them aligned
-  tft.drawString(rising, 280 + dt, 175);
+  tft.drawString(rising, 260 + dt, WEATHER_START_Y + 15);
 
-  String setting = strTime(current->sunset) + " ";
+  String setting = OWOC.forecast[0].readableSunset;
   dt = rightOffset(setting, ":");
-  tft.drawString(setting, 280 + dt, 190);
-
-  tft.setTextDatum(BC_DATUM);
-  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft.drawString(cloudStr, 280, 90);
-
-  String cloudCover = "";
-  cloudCover += current->clouds;
-  cloudCover += "%";
-
-  tft.setTextDatum(BR_DATUM);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextPadding(tft.textWidth(" 100%"));
-  tft.drawString(cloudCover, 285, 110);
-
-  tft.setTextDatum(BC_DATUM);
-  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft.drawString(humidityStr, 280, 130 - 2);
-
-  String humidity = "";
-  humidity += current->humidity;
-  humidity += "%";
-
-  tft.setTextDatum(BR_DATUM);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextPadding(tft.textWidth("100%"));
-  tft.drawString(humidity, 285, 145);
+  tft.drawString(setting, 260 + dt, WEATHER_START_Y + 30);
 
   tft.setTextPadding(0); // Reset padding width to none
 }
@@ -630,7 +378,7 @@ void drawAstronomy() {
 ***************************************************************************************/
 const char* getMeteoconIcon(uint16_t id, bool today)
 {
-  if ( today && id/100 == 8 && (current->dt < current->sunrise || current->dt > current->sunset)) id += 1000; 
+  // if ( today && id/100 == 8 && (OWOC.current->dt < OWOC.current->sunrise || OWOC.current->dt > OWOC.current->sunset)) id += 1000; 
 
   if (id/100 == 2) return "thunderstorm";
   if (id/100 == 3) return "drizzle";
@@ -655,12 +403,18 @@ const char* getMeteoconIcon(uint16_t id, bool today)
   return "unknown";
 }
 
+void displayWeatherCurrent() {
+      drawCurrentWeather();
+      drawAstronomy();
+}
+
+
 /***************************************************************************************
 **                          Draw screen section separator line
 ***************************************************************************************/
 // if you don't want separators, comment out the tft-line
 void drawSeparator(uint16_t y) {
-  tft.drawFastHLine(10, y, 240 - 2 * 10, 0x4228);
+  tft.drawFastHLine(10, y, 320 - 2 * 10, 0x4228);
 }
 
 /***************************************************************************************
@@ -734,7 +488,7 @@ void fillSegment(int x, int y, int start_angle, int sub_angle, int r, unsigned i
     y1 = y2;
   }
 }
-
+#if 0
 /***************************************************************************************
 **                          Print the weather info to the Serial Monitor
 ***************************************************************************************/
@@ -771,55 +525,8 @@ void printWeather(void)
 
 #endif
 }
-/***************************************************************************************
-**             Convert Unix time to a "local time" time string "12:34"
-***************************************************************************************/
-String strTime(time_t unixTime)
-{
-  time_t local_time = TIMEZONE.toLocal(unixTime, &tz1_Code);
+#endif
 
-  String localTime = "";
-
-  if (hour(local_time) < 10) localTime += "0";
-  localTime += hour(local_time);
-  localTime += ":";
-  if (minute(local_time) < 10) localTime += "0";
-  localTime += minute(local_time);
-
-  return localTime;
-}
-
-/***************************************************************************************
-**  Convert Unix time to a local date + time string "Oct 16 17:18", ends with newline
-***************************************************************************************/
-String strDate(time_t unixTime)
-{
-  time_t local_time = TIMEZONE.toLocal(unixTime, &tz1_Code);
-
-  String localDate = "";
-
-  localDate += monthShortStr(month(local_time));
-  localDate += " ";
-  localDate += day(local_time);
-  localDate += " " + strTime(unixTime);
-
-  return localDate;
-}
-
-bool fetchHydrograph() {
-  bool parsed = hydrograph.fetch();
-  if (!parsed) {
-    Serial.println("hydrograph fetch failed. forecast is empty");
-    delay(500);
-    parsed = hydrograph.fetch();
-  }
-  if (!parsed) {
-    Serial.println("hydrograph re-fetch failed. forecast is empty");
-  } else {
-    hydrograph.printForecast();
-  }
-  return parsed;
-}
 
 void drawHydrograph() {
   tft.fillRect(0, 280, 320, 480, TFT_BLACK);
@@ -857,19 +564,6 @@ void drawHydrograph() {
   }
 }
 
-bool fetchUSGSStation() {
-  bool success = usgs->fetch();
-  if (success) {
-    usgs->serialPrint();
-    Serial.println("Getting the last entry");
-    StationReading* sr = usgs->getLastReading();
-    if (sr) {
-      sr->serialPrint();
-      drawUSGSStationReading(sr);
-    }
-  }
-  return success;
-}
 
 /***************************************************************************************
 **                          Draw the current stream status
@@ -904,28 +598,62 @@ const unsigned int getPlayColor(float level) {
   if (level < 6.5f) return TFT_GREEN;
   if (level < 7.0f) return TFT_GREEN;
   if (level < 7.5f) return TFT_GREEN;
+  return TFT_RED;
+}
+
+const unsigned int getTempColor(float tempC) {
+  if (tempC < 10.0f) return TFT_BLUE;
+  if (tempC < 15.0f) return TFT_GREEN;
+  if (tempC < 20.0f) return TFT_YELLOW;
+  if (tempC < 25.0f) return TFT_ORANGE;
+  return TFT_RED;
 }
 
 // draws the current USGS stream data
 void drawUSGSStationReading(StationReading* sr) {
-  tft.fillRect(0, 280, 320, 480, TFT_BLACK);
+  tft.fillRect(0, 270, 320, 480, TFT_BLACK);
+  tft.setTextDatum(TL_DATUM);
+  drawSeparator(270);
+  int valueOffset = 120;
+  char scratch[255] = {};
   
   tft.loadFont(AA_FONT_SMALL);
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft.setTextDatum(TR_DATUM);
   tft.setTextPadding(0);
-  tft.drawString("Little Falls Conditions\n", 220, 280);
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString("Little Falls Conditions", 220, 280);
   if (sr) {
-    tft.printf("Updated at: %s\n", sr->timeStr.c_str());
-
-    int level_width = (int)roundf(sr->stage * (float)20);
-    tft.setTextColor(getPlayColor(sr->stage), TFT_BLACK);
-
-    tft.printf("  Height : %2.2f  %s\n", sr->stage, getPlayString(sr->stage));
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextPadding(0);
+    tft.drawString("Updated at:", LABEL_X, 295);
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    tft.drawString(sr->timeStr.c_str(), valueOffset, 295);
+
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.drawString("Flow:", LABEL_X, 325);
+    tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    sprintf(scratch, "%d", sr->flow);
+    tft.drawString(scratch, valueOffset, 325);
+
     
-    tft.printf("  Flow   : %d\n", sr->flow);
-    tft.printf("  Temp   : %2.1fC", sr->temp);
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.drawString("Height:", LABEL_X, 340);
+    int level_width = (int)roundf(sr->stage * (float)30);
+    tft.setTextColor(getPlayColor(sr->stage), TFT_BLACK);
+    sprintf(scratch,"%2.2f  %s", sr->stage, getPlayString(sr->stage));
+    tft.drawString(scratch, valueOffset, 340);
+
+    tft.fillRoundRect(valueOffset,360,level_width,20,5,getPlayColor(sr->stage));
+
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.drawString("Temp:", LABEL_X, 390);
+    tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    float fahrenheit = (sr->temp * 9.0) / 5.0 + 32;
+    sprintf(scratch, "%2.1fC / %2.1fF", sr->temp, fahrenheit);
+    tft.drawString(scratch, valueOffset, 390);
+
+    int temp_width = (int) roundf(sr->temp * 5);
+    tft.fillRoundRect(valueOffset,410,temp_width,20,5,getTempColor(sr->temp));
   }
 }
 
@@ -934,44 +662,185 @@ void utcDateStringToLocalString(std::string dateTime, char* outString, size_t ou
   ace_time::ZonedDateTime zdt = ace_time::ZonedDateTime::forDateString(dateTime.c_str()).convertToTimeZone(localTz);
   snprintf(outString, outStringLen,"%02d/%02d %02d:%02d\n", zdt.month(), zdt.day(), zdt.hour(), zdt.minute());
 }
-/**The MIT License (MIT)
-  Copyright (c) 2015 by Daniel Eichhorn
-  Permission is hereby granted, free of charge, to any person obtaining a copy
-  of this software and associated documentation files (the "Software"), to deal
-  in the Software without restriction, including without limitation the rights
-  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-  copies of the Software, and to permit persons to whom the Software is
-  furnished to do so, subject to the following conditions:
-  The above copyright notice and this permission notice shall be included in all
-  copies or substantial portions of the Software.
-  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-  AUTHORS OR COPYBR_DATUM HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-  SOFTWARE.
-  See more at http://blog.squix.ch
-*/
 
-//  Changes made by Bodmer:
+/***************************************************************************************
+**                          Tasks
+***************************************************************************************/
+void fetchUSGSStation() {
+  bool success = usgs->fetch();
+  if (success) {
+    usgs->serialPrint();
+    Serial.println("Getting the last entry");
+    StationReading* sr = usgs->getLastReading();
+    if (sr && currentRiverDisplay == SHOW_CURRENT) {
+      sr->serialPrint();
+      //drawUSGSStationReading(sr);
+    }
+  }
+}
 
-//  Minor changes to text placement and auto-blanking out old text with background colour padding
-//  Moon phase text added (not provided by OpenWeather)
-//  Forecast text lines are automatically split onto two lines at a central space (some are long!)
-//  Time is printed with colons aligned to tidy display
-//  Min and max forecast temperatures spaced out
-//  New smart splash startup screen and updated progress messages
-//  Display does not need to be blanked between updates
-//  Icons nudged about slightly to add wind direction + speed
-//  Barometric pressure added
 
-//  Adapted to use the OpenWeather library: https://github.com/Bodmer/OpenWeather
-//  Moon phase/rise/set (not provided by OpenWeather) replace with  and cloud cover humidity
-//  Created and added new 100x100 and 50x50 pixel weather icons, these are in the
-//  sketch data folder, press Ctrl+K to view
-//  Add moon icons, eliminate all downloads of icons (may lose server!)
-//  Adapted to use anti-aliased fonts, tweaked coords
-//  Added forecast for 4th day
-//  Added cloud cover and humidity in lieu of Moon rise/set
-//  Adapted to be compatible with ESP32
+void fetchHydrograph() {
+  bool parsed = hydrograph.fetch();
+  if (!parsed) {
+    Serial.println("hydrograph fetch failed. forecast is empty");
+    delay(500);
+    parsed = hydrograph.fetch();
+  } else  if (currentRiverDisplay == SHOW_FORECAST) {
+    Serial.println("Displaying forecast");
+    hydrograph.printForecast();
+    drawHydrograph();
+  }
+
+  if (!parsed) {
+    Serial.println("hydrograph re-fetch failed. forecast is empty");
+  } else  if (currentRiverDisplay == SHOW_FORECAST) {
+    Serial.println("Displaying forecast");
+    hydrograph.printForecast();
+    drawHydrograph();
+  }
+ 
+}
+
+void fetchWeather() {
+  OWOC.parseWeather(ONECALLKEY, NULL, NULL, NULL, METRIC_WEATHER, WEATHER_CITY, EXCL_H + EXCL_M, NULL); //<---------excludes hourly, minutely, historical data 1 day
+  switch(currentRiverDisplay) {
+    case SHOW_FORECAST:
+      displayWeatherForecast();
+      break;
+    case SHOW_CURRENT:
+      displayWeatherCurrent();
+      break;
+  }
+}
+
+
+ZonedDateTime getTimeFromNTP() {
+  auto localTz = TimeZone::forZoneInfo(&zonedb::kZoneAmerica_New_York, &timeZoneProcessor);
+  acetime_t nowSeconds = ntpClock.getNow();
+  Serial.printf("ntpClock returned %ul\n", nowSeconds);
+  ZonedDateTime dateTime = ZonedDateTime::forEpochSeconds(nowSeconds, localTz);
+  Serial.printf("Unix time is %d %02d:%02d\n", dateTime.toEpochSeconds(), dateTime.hour(), dateTime.minute());
+  return dateTime;
+}
+
+void updateSystemTime(){
+  auto t = getTimeFromNTP();
+  systemClock.setNow(t.toEpochSeconds());
+}
+
+
+void displayTime(){
+  int xpos = 0;
+  int ypos = 0; 
+  
+  auto localTz = TimeZone::forZoneInfo(&zonedb::kZoneAmerica_New_York, &timeZoneProcessor);
+  acetime_t nowSeconds = systemClock.getNow();
+  ZonedDateTime dateTime = ZonedDateTime::forEpochSeconds(nowSeconds, localTz);
+
+  tft.unloadFont();
+  tft.setCursor(5,5,8);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.printf("%02d:%02d", dateTime.hour(), dateTime.minute());
+  tft.setCursor(260,5,4);
+  tft.print(localTz.getAbbrev(nowSeconds));
+  tft.setCursor(260,31,4);
+  tft.printf("%s", DateStrings().dayOfWeekShortString(dateTime.dayOfWeek()));
+  tft.setCursor(260,56,4);
+  tft.printf("%d/%d", dateTime.month(), dateTime.day());
+  
+}
+
+
+void checkTouch(){
+  // This will report a LOT of events when touched
+  TouchPoint p = touchScreen.read();
+  if (p.touched) {
+    Serial.printf("You touched me at %d x %d\n", p.xPos, p.yPos);
+    tft.fillScreen(TFT_BLACK);
+    if (currentRiverDisplay == SHOW_FORECAST) {
+      currentRiverDisplay = SHOW_CURRENT;
+      displayWeatherCurrent();
+      drawUSGSStationReading(usgs->getLastReading());
+    } else {
+      currentRiverDisplay = SHOW_FORECAST;
+      displayWeatherForecast();
+      drawHydrograph();
+    }
+  }
+}
+
+
+/***************************************************************************************
+**                          Setup
+***************************************************************************************/
+void setup() {
+  Serial.begin(250000);
+
+  tft.begin();
+  
+  // Backlight hack...
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, 128);
+
+  touchScreen.begin();
+  tft.fillScreen(TFT_BLACK);
+
+  SPIFFS.begin();
+  listFiles();
+
+  // Enable if you want to erase SPIFFS, this takes some time!
+  // then disable and reload sketch to avoid reformatting on every boot!
+  #ifdef FORMAT_SPIFFS
+    tft.setTextDatum(BC_DATUM); // Bottom Centre datum
+    tft.drawString("Formatting SPIFFS, so wait!", 120, 195); SPIFFS.format();
+  #endif
+
+  // Draw splash screen
+  if (SPIFFS.exists("/splash/OpenWeather.jpg")   == true) ui.drawJpeg("/splash/OpenWeather.jpg",   0, 40);
+
+  delay(2000);
+
+  // Clear bottom section of screen
+  tft.fillRect(0, 206, 240, 320 - 206, TFT_BLACK);
+
+  tft.loadFont(AA_FONT_SMALL);
+  tft.setTextDatum(BC_DATUM); // Bottom Centre datum
+  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+
+  tft.drawString("Original by: blog.squix.org", 120, 260);
+  tft.drawString("Adapted by: Ken Andrews", 120, 280);
+
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+
+  delay(2000);
+
+  tft.fillRect(0, 206, 240, 320 - 206, TFT_BLACK);
+  tft.setCursor(18, 240);
+  tft.print("If this screen does not disappear\nFollow the instructions to setup WiFi\n");
+  
+
+  WIFISetUp();
+  tft.fillRect(0, 206, 240, 320 - 206, TFT_BLACK);
+
+  ntpClock.setup();
+  tft.setTextDatum(BC_DATUM);
+  tft.setTextPadding(240); // Pad next drawString() text to full width to over-write old text
+  tft.drawString(" ", 120, 220);  // Clear line above using set padding width
+  tft.drawString("Fetching weather data...", 120, 240);
+
+  tft.unloadFont();
+  tft.fillScreen(TFT_BLACK);
+  updateSystemTime();
+  fetchUSGSStation();
+  fetchWeather();
+  fetchHydrograph();
+  
+  runner.startNow();  // set
+
+}
+
+void loop() {
+  runner.execute();
+
+}
