@@ -56,9 +56,11 @@ void USGSStation::tokenize(std::string line) {
     } 
       
     // Printing the token vector 
+#if 0
     for(int i = 0; i < tokens.size(); i++) {
         Serial.printf("Token %d : %s\n", i, tokens[i].c_str());
     }
+#endif
     if ( !tokens[0].compare("agency_cd") ) {
       processHeading(tokens);
     } else if (!tokens[0].compare("USGS")) {
