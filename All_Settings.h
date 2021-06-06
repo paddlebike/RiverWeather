@@ -24,8 +24,6 @@
 //////////////////////////////
 // Setttings defined below
 
-//#define WIFI_SSID      "goofydogs"
-//#define WIFI_PASSWORD  "troopandcasper"
 
 //#define TIMEZONE usET // See NTP_Time.h tab for other "Zone references", UK, usMT etc
 
@@ -37,13 +35,16 @@ const int UPDATE_INTERVAL_SECS = 15 * 60UL; // 15 minutes
 // For units use "metric" or "imperial"
 const String units = "imperial";
 
+#define ONECALLKEY "<private>"
+#define WEATHER_CITY 4761951 //<---------------Great Falls VA
+
 // Sign up for a key and read API configuration info here:
 // https://openweathermap.org/, change x's to your API key
-const String api_key = "58f369e1efbff0ef7c1d8dce59ef4be2";
+//const String api_key = "58f369e1efbff0ef7c1d8dce59ef4be2";
 
 // Set the forecast longitude and latitude to at least 4 decimal places
-const String latitude =  "38.995"; // 90.0000 to -90.0000 negative for Southern hemisphere
-const String longitude = "-77.253"; // 180.000 to -180.000 negative for West
+//const String latitude =  "38.995"; // 90.0000 to -90.0000 negative for Southern hemisphere
+//const String longitude = "-77.253"; // 180.000 to -180.000 negative for West
 
 // For language codes see https://openweathermap.org/current#multi
 const String language = "en"; // Default language = en = English
