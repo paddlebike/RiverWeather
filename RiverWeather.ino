@@ -105,8 +105,6 @@ using namespace ace_time;
 using namespace ace_time::clock;
 
 
-#define ONECALLKEY "58f369e1efbff0ef7c1d8dce59ef4be2"
-#define WEATHER_CITY 4761951 //<---------------Great Falls VA
 #define GAUGE_TEXT_START 150
 #define METRIC_WEATHER 0
 
@@ -674,7 +672,7 @@ void fetchUSGSStation() {
     StationReading* sr = usgs->getLastReading();
     if (sr && currentRiverDisplay == SHOW_CURRENT) {
       sr->serialPrint();
-      //drawUSGSStationReading(sr);
+      drawUSGSStationReading(sr);
     }
   }
 }

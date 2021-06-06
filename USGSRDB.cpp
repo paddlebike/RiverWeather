@@ -26,6 +26,7 @@ bool USGSStation::fetch() {
     // HTTP header has been send and Server response header has been handled
     Serial.printf("[HTTP] GET... code: %d\n", httpCode);
     if (httpCode == HTTP_CODE_OK) {
+      success = true;
       this->readings.clear();
       String payload = http.getString();
       std::string last;
@@ -38,8 +39,11 @@ bool USGSStation::fetch() {
           tokenize(line);
         }
       }
+    } else {
+      Serial.print("See if we get a crash after this");
     }
   }
+  return success;
 }
 
 void USGSStation::tokenize(std::string line) {
