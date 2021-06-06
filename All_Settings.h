@@ -24,8 +24,6 @@
 //////////////////////////////
 // Setttings defined below
 
-//#define WIFI_SSID      "<private>
-//#define WIFI_PASSWORD  "<private>"
 
 //#define TIMEZONE usET // See NTP_Time.h tab for other "Zone references", UK, usMT etc
 
@@ -39,11 +37,10 @@ const String units = "imperial";
 
 // Sign up for a key and read API configuration info here:
 // https://openweathermap.org/, change x's to your API key
-const String api_key = "<private>";
 
-// Set the forecast longitude and latitude to at least 4 decimal places
-const String latitude =  "38.995"; // 90.0000 to -90.0000 negative for Southern hemisphere
-const String longitude = "-77.253"; // 180.000 to -180.000 negative for West
+#define ONECALLKEY "<private>"
+#define WEATHER_CITY 4761951 //<---------------Great Falls VA
+
 
 // For language codes see https://openweathermap.org/current#multi
 const String language = "en"; // Default language = en = English
