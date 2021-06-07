@@ -6,6 +6,8 @@ It uses the WT32-SC01 board from seeed studio https://www.seeedstudio.com/ESP32-
 
 ## Libraries used:
  * TFT_eSPI library:  https://github.com/Bodmer/TFT_eSPI
+ * JPEGDecoder:       https://github.com/Bodmer/JPEGDecoder
+ * TinyXML:           https://github.com/leethomason/tinyxml
  * OpenWeather:       https://openweathermap.org/api/one-call-api
  * WiFi Manager:      https://github.com/tzapu/WiFiManager
  * NTP Client:        https://github.com/arduino-libraries/NTPClient
