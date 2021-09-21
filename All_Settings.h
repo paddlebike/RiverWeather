@@ -38,8 +38,21 @@ const String units = "imperial";
 // Sign up for a key and read API configuration info here:
 // https://openweathermap.org/, change x's to your API key
 
-#define ONECALLKEY "<private>"
-#define WEATHER_CITY 4761951 //<---------------Great Falls VA
+#define ONECALLKEY "58f369e1efbff0ef7c1d8dce59ef4be2"
+  
+#ifdef FREDERICKSBURG
+#define WEATHER_CITY 4761951 //<---------------Fredericksburg VA 
+#define USGS_STATION "01668000"
+#define NWIS_STATION "fdbv2"
+#define FORECAST_LABEL "Rappahannock Forecast"
+#define CURRENT_LABEL  "Rappahannock Conditions"
+#else
+#define WEATHER_CITY 4760084 //<---------------Great Falls VA 
+#define USGS_STATION "01646500"
+#define NWIS_STATION "brkm2"
+#define FORECAST_LABEL "Little Falls Forecast"
+#define CURRENT_LABEL  "Little Falls Conditions"
+#endif
 
 
 // For language codes see https://openweathermap.org/current#multi

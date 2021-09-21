@@ -39,6 +39,29 @@
 #include <Wire.h>
 #include "FT62XXTouchScreen.h"
 #include <SPI.h>
+
+//
+// Define these in User_Setup.h in the TFT_eSPI
+//
+//#define ST7796_DRIVER 1
+//#define TFT_WIDTH  480
+//#define TFT_HEIGHT 320
+//
+//#define DISPLAY_WIDTH  480
+//#define DISPLAY_HEIGHT 320
+//
+//#define USE_HSPI_PORT 1
+//#define PIN_SDA 18
+//#define PIN_SCL 19
+//#define TFT_MISO 12
+//#define TFT_MOSI 13
+//#define TFT_SCLK 14
+//#define TFT_CS   15
+//#define TFT_DC   21
+//#define TFT_RST  22
+//#define TFT_BL   23
+
+//#define TOUCH_CS PIN_D2     // Chip select pin (T_CS) of touch screen
 #include <TFT_eSPI.h> // https://github.com/Bodmer/TFT_eSPI
 
 // Additional functions
@@ -48,6 +71,7 @@
 
 
 // check All_Settings.h for adapting to your needs
+//#define FREDERICKSBURG
 #include "All_Settings.h"
 #include <OpenWeatherOneCall.h>
 #include <NTPClient.h>
@@ -60,28 +84,7 @@
 #include "USGSRDB.h"
 #include "utils.h"
 
-//
-// Define these in User_Setup.h in the TFT_eSPI
-//
-#define ST7796_DRIVER 1
-#define TFT_WIDTH  480
-#define TFT_HEIGHT 320
 
-#define DISPLAY_WIDTH  480
-#define DISPLAY_HEIGHT 320
-
-#define USE_HSPI_PORT 1
-#define PIN_SDA 18
-#define PIN_SCL 19
-#define TFT_MISO 12
-#define TFT_MOSI 13
-#define TFT_SCLK 14
-#define TFT_CS   15
-#define TFT_DC   21
-#define TFT_RST  22
-#define TFT_BL   23
-
-//#define TOUCH_CS PIN_D2     // Chip select pin (T_CS) of touch screen
 
 #define BLACK 0x0000
 #define WHITE 0xFFFF
@@ -105,8 +108,6 @@ using namespace ace_time;
 using namespace ace_time::clock;
 
 
-#define ONECALLKEY "58f369e1efbff0ef7c1d8dce59ef4be2"
-#define WEATHER_CITY 4761951 //<---------------Great Falls VA
 #define GAUGE_TEXT_START 150
 #define METRIC_WEATHER 0
 
@@ -121,9 +122,8 @@ OpenWeatherOneCall OWOC;    // Invoke Weather Library
 
 long lastDownloadUpdate = millis();
 
-static WiFiClient client;
 void XML_callback(uint8_t statusflags, char* tagName, uint16_t tagNameLen, char* data, uint16_t dataLen);
-static Hydrograph hydrograph("brkm2", &XML_callback);
+static Hydrograph hydrograph(NWIS_STATION, &XML_callback);
 
 void XML_callback(uint8_t statusflags, char* tagName, uint16_t tagNameLen, char* data, uint16_t dataLen) {
   hydrograph.processXML(statusflags, tagName, tagNameLen, data, dataLen);
@@ -131,22 +131,24 @@ void XML_callback(uint8_t statusflags, char* tagName, uint16_t tagNameLen, char*
 static BasicZoneProcessor timeZoneProcessor;
 static NtpClock ntpClock;
 static SystemClockLoop systemClock(nullptr /*reference*/, nullptr /*backup*/);
-static USGSStation* usgs = new USGSStation("01646500");
+static USGSStation* usgs = new USGSStation(USGS_STATION);
 
 int currentRiverDisplay = SHOW_FORECAST;
 Scheduler runner;
 
 
 void fetchUSGSStation();
+void fetchHydrograph();
 void fetchWeather();
 void updateSystemTime();
 void displayTime();
 void checkTouch();
 
 // Tasks
-Task fetchUSGSStationTask(15 * 60 * 1000, TASK_FOREVER, &fetchUSGSStation, &runner, true);
-Task fetchWeatherTask(15 * 60 * 1000, TASK_FOREVER, &fetchWeather, &runner, true);
-Task updateSystemTimeTask(60 * 60 * 1000, TASK_FOREVER, &updateSystemTime, &runner, true);
+Task fetchUSGSStationTask(20 * 60 * 1000, TASK_FOREVER, &fetchUSGSStation, &runner, true);
+Task fetchHydrographTask(15 * 60 * 1000, TASK_FOREVER, &fetchHydrograph, &runner, true);
+Task fetchWeatherTask(30 * 60 * 1000, TASK_FOREVER, &fetchWeather, &runner, true);
+Task updateSystemTimeTask(24 * 60 * 60 * 1000, TASK_FOREVER, &updateSystemTime, &runner, true);
 Task displayTimeTask(1000, TASK_FOREVER, &displayTime,  &runner, true);
 Task checkTouchTask(100, TASK_FOREVER, &checkTouch, &runner, true);
 
@@ -171,8 +173,6 @@ int rightOffset(String text, String sub);
 int splitIndex(String text);
 
 void drawHydrograph();
-
-void fetchUSGSStation();
 void drawUSGSStationReading(StationReading* sr);
 
 
@@ -219,6 +219,10 @@ void WIFISetUp(void)
 **                          Draw the current weather
 ***************************************************************************************/
 void drawCurrentWeather() {
+  if (!OWOC.current) {
+    Serial.println("Weather returned no current data");
+    return;
+  }
   String wind[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW" };
   drawSeparator(100);
   tft.setTextPadding(0); 
@@ -333,7 +337,10 @@ void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex) {
 **                          Draw Sun rise/set, Moon, cloud cover and humidity
 ***************************************************************************************/
 void drawAstronomy() {
-
+  if (!OWOC.forecast) {
+    Serial.println("No weather forecast!");
+    return;
+  }
   tft.setTextDatum(BC_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextPadding(tft.textWidth(" Last qtr "));
@@ -528,40 +535,42 @@ void printWeather(void)
 #endif
 
 
-void drawHydrograph() {
+void drawHydrograph() { 
   tft.fillRect(0, 280, 320, 480, TFT_BLACK);
   tft.loadFont(AA_FONT_SMALL);
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
   tft.setTextDatum(TR_DATUM);
   tft.setTextPadding(0);
-  tft.drawString("Little Falls Forecast", 220, 280);
+  tft.drawString(FORECAST_LABEL, 220, 280);
   char dateString[20] = {};
   int startY = 300;
-  for (auto& element : hydrograph.observed) {
-    utcDateStringToLocalString(element->dateTime, dateString, sizeof(dateString));
+  for (int i = 0; i < hydrograph.last_observed; i++) {
+    RiverStatus* rs =  &hydrograph.observed_array[i]; 
+    utcDateStringToLocalString(rs->dateTime, dateString, sizeof(dateString));
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.setTextPadding(0);
     tft.drawString(dateString, 100, startY);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString(element->stage.c_str(), 150, startY);
+    tft.drawString(rs->stage.c_str(), 150, startY);
     startY += 20;
     if (startY > 460) {
       break;
     }
   }
   startY = 300;
-  for (auto& element : hydrograph.forecast) {
-    utcDateStringToLocalString(element->dateTime, dateString, sizeof(dateString));
+  for (int i = 0; i < hydrograph.last_forecast; i++) {
+    RiverStatus* rs =  &hydrograph.forecast_array[i]; 
+    utcDateStringToLocalString(rs->dateTime, dateString, sizeof(dateString));
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.setTextPadding(0);
     tft.drawString(dateString, 270, startY);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString(element->stage.c_str(), 305, startY);
+    tft.drawString(rs->stage.c_str(), 305, startY);
     startY += 20;
     if (startY > 460) {
       break;
     }
-  }
+  } 
 }
 
 
@@ -621,7 +630,7 @@ void drawUSGSStationReading(StationReading* sr) {
   tft.setTextColor(TFT_ORANGE, TFT_BLACK);
   tft.setTextPadding(0);
   tft.setTextDatum(TR_DATUM);
-  tft.drawString("Little Falls Conditions", 220, 280);
+  tft.drawString(CURRENT_LABEL, 220, 280);
   if (sr) {
     tft.setTextDatum(TL_DATUM);
     tft.setTextPadding(0);
@@ -657,7 +666,7 @@ void drawUSGSStationReading(StationReading* sr) {
   }
 }
 
-void utcDateStringToLocalString(std::string dateTime, char* outString, size_t outStringLen) {
+void utcDateStringToLocalString(String dateTime, char* outString, size_t outStringLen) {
   static auto localTz = ace_time::TimeZone::forZoneInfo(&ace_time::zonedb::kZoneAmerica_New_York, &timeZoneProcessor);
   ace_time::ZonedDateTime zdt = ace_time::ZonedDateTime::forDateString(dateTime.c_str()).convertToTimeZone(localTz);
   snprintf(outString, outStringLen,"%02d/%02d %02d:%02d\n", zdt.month(), zdt.day(), zdt.hour(), zdt.minute());
@@ -667,43 +676,48 @@ void utcDateStringToLocalString(std::string dateTime, char* outString, size_t ou
 **                          Tasks
 ***************************************************************************************/
 void fetchUSGSStation() {
+  Serial.println(ESP.getFreeHeap());
   bool success = usgs->fetch();
   if (success) {
-    usgs->serialPrint();
+    // usgs->serialPrint();
     Serial.println("Getting the last entry");
     StationReading* sr = usgs->getLastReading();
     if (sr && currentRiverDisplay == SHOW_CURRENT) {
       sr->serialPrint();
-      //drawUSGSStationReading(sr);
+      drawUSGSStationReading(sr);
     }
   }
+  Serial.println(ESP.getFreeHeap());
 }
 
 
 void fetchHydrograph() {
-  bool parsed = hydrograph.fetch();
-  if (!parsed) {
-    Serial.println("hydrograph fetch failed. forecast is empty");
-    delay(500);
+  Serial.println(ESP.getFreeHeap());
+  bool parsed = false;
+
+  for(int i=0; i <5; i++) {
     parsed = hydrograph.fetch();
-  } else  if (currentRiverDisplay == SHOW_FORECAST) {
-    Serial.println("Displaying forecast");
-    hydrograph.printForecast();
-    drawHydrograph();
+    if (!parsed) {
+      Serial.println("hydrograph fetch failed. forecast is empty Will try again");
+      delay(2000);
+    } else  if (currentRiverDisplay == SHOW_FORECAST) {
+      Serial.println("Displaying forecast");
+      hydrograph.printForecast();
+      drawHydrograph();
+      break;
+    }
   }
 
-  if (!parsed) {
-    Serial.println("hydrograph re-fetch failed. forecast is empty");
-  } else  if (currentRiverDisplay == SHOW_FORECAST) {
-    Serial.println("Displaying forecast");
-    hydrograph.printForecast();
-    drawHydrograph();
-  }
- 
+  Serial.println(ESP.getFreeHeap());
 }
 
 void fetchWeather() {
-  OWOC.parseWeather(ONECALLKEY, NULL, NULL, NULL, METRIC_WEATHER, WEATHER_CITY, EXCL_H + EXCL_M, NULL); //<---------excludes hourly, minutely, historical data 1 day
+  Serial.println(ESP.getFreeHeap());
+  int res = OWOC.parseWeather(ONECALLKEY, NULL, NULL, NULL, METRIC_WEATHER, WEATHER_CITY, EXCL_H + EXCL_M + EXCL_A, 0); //<---------excludes hourly, minutely, historical data 1 day
+  Serial.printf("Parsing openweather returned %d\n", res);
+  if (0 > res) {
+    return;
+  }
   switch(currentRiverDisplay) {
     case SHOW_FORECAST:
       displayWeatherForecast();
@@ -712,6 +726,7 @@ void fetchWeather() {
       displayWeatherCurrent();
       break;
   }
+  Serial.println(ESP.getFreeHeap());
 }
 
 
@@ -832,9 +847,9 @@ void setup() {
   tft.unloadFont();
   tft.fillScreen(TFT_BLACK);
   updateSystemTime();
-  fetchUSGSStation();
-  fetchWeather();
-  fetchHydrograph();
+  //fetchWeather();
+  //fetchUSGSStation();
+  //fetchHydrograph();
   
   runner.startNow();  // set
 

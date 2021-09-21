@@ -1,16 +1,14 @@
 #include "hydrograph.h"
-
+#include <HTTPClient.h>
 #define READ_ATTEMPTS 5
 
-void RiverStatus::print() {
-  Serial.printf("%s %s %s\n", dateTime.c_str(), stage.c_str(), flow.c_str());
-}
 
-Hydrograph::Hydrograph(std::string site, XMLcallback xml_callback) {
-  siteCode = site;
-  xml.init((uint8_t *)buffer, sizeof(buffer), xml_callback);
-};
-/*
+Hydrograph::Hydrograph(const String site, XMLcallback xml_callback) {
+
+  this->siteCode = site;
+  this->xml.init((uint8_t *)buffer, sizeof(buffer), xml_callback);
+  this->clear();
+}
   //
   // Status flags
   //
@@ -20,38 +18,33 @@ Hydrograph::Hydrograph(std::string site, XMLcallback xml_callback) {
   #define STATUS_END_TAG   0x08
   #define STATUS_ERROR     0x10
 
-*/
 void Hydrograph::processXML(uint8_t statusflags, char* tagName, uint16_t tagNameLen, char* stuff, uint16_t dataLen) {
   static RiverStatus* inForecast = NULL;
   static RiverStatus* inObesrvered = NULL;
-  static std::string currentTag;
+  
   if (statusflags == STATUS_ERROR) {
-    //Serial.printf("XML_callback error statusflags 0x%2x tagName %s\n", statusflags, tagName);
+    Serial.printf("XML_callback error statusflags 0x%2x tagName %s\n", statusflags, tagName);
     return;
   }
 
   if (statusflags == STATUS_START_TAG) {
-    currentTag = tagName;
+    strncpy(currentTag, tagName, sizeof(currentTag));
+    //Serial.printf("New current tag is %s\n", tagName);
   } 
 
-  if (!currentTag.compare("/site")) {
+ 
+  if (!strcasecmp(currentTag,"/site")) {
     processSite(statusflags, tagName, stuff);
   } 
-
+  //Serial.printf("XML current tag is %s\n", tagName);
   if (!strcasecmp(tagName, "/site/observed/datum")) {
     if (statusflags == STATUS_START_TAG) {
-      inObesrvered = new(RiverStatus);
-    } else if (statusflags == STATUS_END_TAG) {
-      observed.push_back(inObesrvered);
-      inObesrvered = NULL;
-    }
+      inObesrvered = this->nextObserved();
+    } 
   } else if (!strcasecmp(tagName, "/site/forecast/datum")) {
     if (statusflags == STATUS_START_TAG) {
-      inForecast = new(RiverStatus);
-    } else if (statusflags == STATUS_END_TAG) {
-      forecast.push_back(inForecast);
-      inForecast = NULL;
-    }
+      inForecast = this->nextForecast();
+    } 
   } 
   if (statusflags == STATUS_TAG_TEXT) {
     if (inObesrvered) {
@@ -79,7 +72,7 @@ void Hydrograph::processXML(uint8_t statusflags, char* tagName, uint16_t tagName
     }
   }
   if (statusflags == STATUS_END_TAG) {
-    currentTag.clear();
+    currentTag[0] = '\0';
   } 
 }
 
@@ -100,32 +93,34 @@ bool Hydrograph::fetch() {
   if (httpCode > 0) {
     // HTTP header has been send and Server response header has been handled
     Serial.printf("[HTTP] GET... code: %d\n", httpCode);
-    this->clear();
 
     // file found at server
     if (httpCode == HTTP_CODE_OK) {
-      uint32_t t = 0;
-      byte     c;
-      WiFiClient* wc = http.getStreamPtr();
-      if (wc) {
-        memset(buffer, sizeof(buffer), 0);
-        xml.reset();
-        delay(100);
-        int attempts = 0;
-        while (attempts < READ_ATTEMPTS) {
-          if ((wc->read(&c, 1)) == 1) {
-            attempts = 0;
-            xml.processChar(c);
-            t++;
-          } else {
-            attempts++;
-            //Serial.printf("Attempt %d after reading %d bytes\n", attempts, t); 
-            delay(100);
-          }
-        }
-        Serial.printf("Finished stream after reading %d bytes\n",t);
+      // get lenght of document (is -1 when Server sends no Content-Length header)
+      delay(100);
+      int len = http.getSize();
+      Serial.printf("[HTTP] GET... length: %d\n", len);
+      if (len > 0) {
+        this->clear();
       }
-      client.stop();
+      byte     c;
+      WiFiClient* stream = http.getStreamPtr();
+      while(http.connected() && (len > 0 || len == -1)) {
+          // get available data size
+          size_t size = stream->available();
+          if(size) {
+              c = stream->read();
+              if(c != -1 && c != '\0') {
+                  len--;
+                  xml.processChar(c);
+              } else {
+                Serial.printf("[HTTP] Error processing char %d\n",(int) c);
+                break;
+              }
+          } else {
+            delay(1);
+          }
+      }
     }
 
   } else {
@@ -133,22 +128,50 @@ bool Hydrograph::fetch() {
   }
 
   http.end();
-  return (forecast.size() > 0);
+  return (this->last_forecast > 0);
+
 }
 
 
 void Hydrograph::clear() {
-  siteName.clear();
-  generationTime.clear();
+  memset(this->buffer, 0 , sizeof(this->buffer));
+  xml.reset();
+  this->siteName.clear();
+  this->generationTime.clear();
+  this->last_observed = 0;
+  this->last_forecast = 0;
+  for(int i = 0; i < HYDROGRAPH_COUNT_MAX; i++) {
+    clearRiverStatus(&this->observed_array[i]);
+    clearRiverStatus(&this->forecast_array[i]);
+  }
+}
 
-  for (auto & element : observed) {
-    delete(element);
+void Hydrograph::clearRiverStatus(RiverStatus* rs) {
+  if (rs){
+    rs->dateTime.clear();
+    rs->stage.clear();
+    rs->flow.clear();
   }
-  observed.clear();
-  for (auto & element : forecast) {
-    delete(element);
+}
+
+RiverStatus* Hydrograph::nextObserved() {
+  if (this->last_observed < HYDROGRAPH_COUNT_MAX) {
+    return &this->observed_array[this->last_observed++];
+  } 
+  return NULL;
+}
+
+RiverStatus* Hydrograph::nextForecast() {
+  if (this->last_forecast < HYDROGRAPH_COUNT_MAX) {
+    return &this->forecast_array[this->last_forecast++];
+  } 
+  return NULL;
+}
+
+void Hydrograph::printRiverStatus(RiverStatus* rs) {
+  if (rs){
+    Serial.printf("%s %s %s\n", rs->dateTime.c_str(), rs->stage.c_str(), rs->flow.c_str());
   }
-  forecast.clear();
 }
 
 void Hydrograph::print() {
@@ -156,12 +179,13 @@ void Hydrograph::print() {
   Serial.println(generationTime.c_str());
 
   Serial.println("Observations");
-  for (auto& element : observed) {
-    element->print();
+  for(int i = 0; i < HYDROGRAPH_COUNT_MAX; i++) {
+    printRiverStatus(&this->observed_array[i]);
   }
+  
   Serial.println("Forecast");
-  for (auto& element : forecast) {
-    element->print();
+  for(int i = 0; i < HYDROGRAPH_COUNT_MAX; i++) {
+    printRiverStatus(&this->forecast_array[i]);
   }
 
 }
@@ -170,8 +194,8 @@ void Hydrograph::print() {
 void Hydrograph::printForecast() {
   Serial.println(generationTime.c_str());
   Serial.println("Forecast");
-  for (auto& element : forecast) {
-    element->print();
+  for(int i = 0; i < HYDROGRAPH_COUNT_MAX; i++) {
+    printRiverStatus(&this->forecast_array[i]);
   }
 }
 

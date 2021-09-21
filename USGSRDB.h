@@ -1,47 +1,50 @@
-#include <string>
-#include <vector>
+#include <Vector.h>
+
+const int ELEMENT_COUNT_MAX = 75;
 
 class StationReading {
   public:
     StationReading(int timeColumn, int tempColumn, int stageColumn, int flowColumn) {
       this->timeStr = timeColumn;
-      this->temp = tempColumn;
-      this->stage = stageColumn;
-      this->flow = flowColumn;
+      this->temp    = tempColumn;
+      this->stage   = stageColumn;
+      this->flow    = flowColumn;
     };
     StationReading() {};
-    ~StationReading() {};
+    virtual ~StationReading(){this->clear();}
+    void clear();
     void serialPrint();
 
-    std::string line;
-    std::string timeStr;
-    float       temp;
-    int         flow;
-    float       stage;
+    String  line;
+    String  timeStr;
+    float   temp;
+    int     flow;
+    float   stage;
 
   
 };
 
 class USGSStation {
   public:
-    USGSStation(std::string siteId) { this->siteId = siteId; }
+    USGSStation(String siteId);
     ~USGSStation() {this->clear();};
 
     bool fetch();
    
     void clear();
     void serialPrint();
-    StationReading* getLastReading(){return this->readings.back();}
-    //std::vector<StationReading> getReadings(){return this->readings;}
-
+    StationReading* getLastReading();
+ 
   private:
-    void tokenize(std::string line);
-    void processHeading(std::vector <std::string> tokens);
-    void processReading(std::vector <std::string> tokens);
+    void tokenize(char* line, int length);
+    void processHeading(Vector <String> tokens);
+    void processReading(Vector <String> tokens);
     
   private:
-    std::string siteId;
-    std::vector<StationReading*> readings;
+    char buffer[1000];
+    String siteId;
+
+    StationReading reading;
     int timeColumn;
     int tempColumn;
     int stageColumn;
