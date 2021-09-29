@@ -168,11 +168,6 @@ RiverStatus* Hydrograph::nextForecast() {
   return NULL;
 }
 
-void Hydrograph::printRiverStatus(RiverStatus* rs) {
-  if (rs){
-    Serial.printf("%s %s %s\n", rs->dateTime.c_str(), rs->stage.c_str(), rs->flow.c_str());
-  }
-}
 
 void Hydrograph::print() {
   
@@ -180,12 +175,12 @@ void Hydrograph::print() {
 
   Serial.println("Observations");
   for(int i = 0; i < HYDROGRAPH_COUNT_MAX; i++) {
-    printRiverStatus(&this->observed_array[i]);
+    this->observed_array[i].print();
   }
   
   Serial.println("Forecast");
   for(int i = 0; i < HYDROGRAPH_COUNT_MAX; i++) {
-    printRiverStatus(&this->forecast_array[i]);
+    this->forecast_array[i].print();
   }
 
 }
@@ -195,7 +190,7 @@ void Hydrograph::printForecast() {
   Serial.println(generationTime.c_str());
   Serial.println("Forecast");
   for(int i = 0; i < HYDROGRAPH_COUNT_MAX; i++) {
-    printRiverStatus(&this->forecast_array[i]);
+    this->forecast_array[i].print();
   }
 }
 

@@ -84,7 +84,7 @@
 #include "USGSRDB.h"
 #include "utils.h"
 
-
+// #define FORMAT_SPIFFS 1
 
 #define BLACK 0x0000
 #define WHITE 0xFFFF
@@ -571,6 +571,7 @@ void drawHydrograph() {
       break;
     }
   } 
+  tft.unloadFont();
 }
 
 
@@ -664,6 +665,7 @@ void drawUSGSStationReading(StationReading* sr) {
     int temp_width = (int) roundf(sr->temp * 5);
     tft.fillRoundRect(valueOffset,410,temp_width,20,5,getTempColor(sr->temp));
   }
+  tft.unloadFont();
 }
 
 void utcDateStringToLocalString(String dateTime, char* outString, size_t outStringLen) {
@@ -763,7 +765,7 @@ void displayTime(){
   tft.printf("%s", DateStrings().dayOfWeekShortString(dateTime.dayOfWeek()));
   tft.setCursor(260,56,4);
   tft.printf("%d/%d", dateTime.month(), dateTime.day());
-  
+  tft.unloadFont();
 }
 
 

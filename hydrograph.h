@@ -10,11 +10,18 @@ class RiverStatus {
     RiverStatus() {};
 
     virtual~RiverStatus() {
+      clear();
+    } 
+    
+    void print(){
+      Serial.printf("%s %s %s\n", dateTime.c_str(), stage.c_str(), flow.c_str());
+    }
+    
+    void clear() {
       dateTime.clear();
       stage.clear();
       flow.clear();
-    } 
-    void print();
+    }
 
     String dateTime;
     String stage;
@@ -48,7 +55,6 @@ class Hydrograph {
 
   private:
     void processSite(uint8_t statusflags, char* tagName, char* stuff);
-    //void clearRiverStatus(RiverStatus* rs);
     RiverStatus* nextObserved();
     RiverStatus* nextForecast();
 
