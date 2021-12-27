@@ -761,11 +761,11 @@ void displayTime(){
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.printf("%02d:%02d", dateTime.hour(), dateTime.minute());
   tft.setCursor(260,5,4);
-  tft.print(localTz.getAbbrev(nowSeconds));
-  tft.setCursor(260,31,4);
   tft.printf("%s", DateStrings().dayOfWeekShortString(dateTime.dayOfWeek()));
+  tft.setCursor(260,31,4);
+  tft.printf("%s", DateStrings().monthShortString(dateTime.month()));
   tft.setCursor(260,56,4);
-  tft.printf("%d/%d", dateTime.month(), dateTime.day());
+  tft.printf("%d",dateTime.day());
   tft.unloadFont();
 }
 
