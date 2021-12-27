@@ -1,3 +1,4 @@
+
 //  Example from OpenWeather library: https://github.com/Bodmer/OpenWeather
 //  Adapted by Bodmer to use the TFT_eSPI library:  https://github.com/Bodmer/TFT_eSPI
 
@@ -74,9 +75,9 @@
 //#define FREDERICKSBURG
 #include "All_Settings.h"
 #include <OpenWeatherOneCall.h>
-#include <NTPClient.h>
 
 #include <AceTime.h>
+#include <AceTimeClock.h>
 #define _TASK_SLEEP_ON_IDLE_RUN
 #include <TaskScheduler.h>
 
@@ -732,18 +733,18 @@ void fetchWeather() {
 }
 
 
-ZonedDateTime getTimeFromNTP() {
+
+void updateSystemTime(){
+  if (!ntpClock.isSetup()) {
+    Serial.println(F("NTPClock setup failed... tring again."));
+    ntpClock.setup();
+  }
   auto localTz = TimeZone::forZoneInfo(&zonedb::kZoneAmerica_New_York, &timeZoneProcessor);
   acetime_t nowSeconds = ntpClock.getNow();
   Serial.printf("ntpClock returned %ul\n", nowSeconds);
   ZonedDateTime dateTime = ZonedDateTime::forEpochSeconds(nowSeconds, localTz);
   Serial.printf("Unix time is %d %02d:%02d\n", dateTime.toEpochSeconds(), dateTime.hour(), dateTime.minute());
-  return dateTime;
-}
-
-void updateSystemTime(){
-  auto t = getTimeFromNTP();
-  systemClock.setNow(t.toEpochSeconds());
+  systemClock.setNow(dateTime.toEpochSeconds());
 }
 
 
@@ -793,7 +794,6 @@ void checkTouch(){
 ***************************************************************************************/
 void setup() {
   Serial.begin(250000);
-
   tft.begin();
   
   // Backlight hack...
@@ -840,7 +840,12 @@ void setup() {
   WIFISetUp();
   tft.fillRect(0, 206, 240, 320 - 206, TFT_BLACK);
 
+  // Setup the NTP Clock
   ntpClock.setup();
+  if (!ntpClock.isSetup()) {
+    SERIAL_PORT_MONITOR.println(F("NTPClock setup failed... try again."));
+  }
+
   tft.setTextDatum(BC_DATUM);
   tft.setTextPadding(240); // Pad next drawString() text to full width to over-write old text
   tft.drawString(" ", 120, 220);  // Clear line above using set padding width

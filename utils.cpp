@@ -2,7 +2,6 @@
 
 #include <AceTime.h>
 using namespace ace_time;
-using namespace ace_time::clock;
 static BasicZoneProcessor timeZoneProcessor;
 /***************************************************************************************
 **             Convert Unix time to a "local time" time string "12:34"
